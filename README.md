@@ -1,23 +1,45 @@
-# AWS ACM ACME — certbot, NGINX and Apache on EC2
+# The Certificate Apocalypse on AWS — ACM, ACME and Load Balancers
 
-This project shows **AWS Certificate Manager's ACME endpoint** issuing a
-publicly trusted certificate straight onto a server you run. **certbot** on a
-small EC2 instance requests the certificate from ACM, **NGINX** serves it on
-port 443, and **Apache** produces the page behind it on `127.0.0.1:8080`.
+Public TLS certificates are about to stop being something you renew once a
+year. The CA/Browser Forum's ballot SC-081 cuts the maximum lifetime of a
+publicly trusted certificate in three steps, and cuts how long a CA may reuse
+a domain validation along with it:
 
-The private key is generated on the instance and **never leaves it**. ACM still
-records every certificate in its inventory, with a stable ARN across renewals.
+| From | Maximum certificate lifetime | Domain validation reuse |
+|---|---|---|
+| before March 2026 | 398 days | 398 days |
+| 15 March 2026 | **200 days** | 200 days |
+| 15 March 2027 | **100 days** | 100 days |
+| 15 March 2029 | **47 days** | **10 days** |
 
-A third phase puts the same question behind a load balancer. An **ALB** and an
-**NLB** end TLS with a regular ACM certificate and forward to three NGINX
-backends: one plain HTTP, one with a **self-signed certificate that is expired
-and names the wrong host**, and one with a ten-year self-signed certificate.
-Both load balancers use the broken one anyway, because neither checks the
-certificate a target presents, which makes the ten-year one the pattern to
-copy.
+At 47 days, every public certificate in an estate is renewed seven or eight
+times a year. A calendar reminder, a ticket to the security team, a `.pfx`
+pasted into a console: anything that involves a person turns into an outage
+waiting to happen. The only certificates that survive are the ones **nobody
+renews by hand**.
 
-It uses **Terraform** (the `aws` and `awscc` providers) and a few shell scripts
-to build, prove, renew and tear down the lab.
+This project is a working lab for that problem on AWS. It sorts every
+certificate in a typical EC2 web stack into one of three places, and builds
+each one:
+
+1. **On the load balancer, renewed by AWS.** A regular ACM certificate on an
+   ALB or NLB. ACM renews it on its own however short lifetimes get, so it is
+   already solved.
+2. **Behind the load balancer, never renewed.** The hop from the load
+   balancer to the instance. Neither the ALB nor the NLB checks the
+   certificate a target presents, so it can be a **ten-year self-signed
+   certificate** and drop out of the renewal problem entirely. The lab proves
+   it with a backend whose certificate is expired, self-signed and names the
+   wrong host, and both load balancers use it anyway.
+3. **On the instance, renewed by ACME.** When a server has to present a
+   public certificate itself, with no load balancer in front, the answer is an
+   ACME client. **AWS Certificate Manager's ACME endpoint** lets certbot get
+   publicly trusted Amazon certificates (already 45 days long) with no
+   HTTP-01 or DNS-01 challenge, while the private key stays on the instance
+   and ACM still lists every certificate in its inventory.
+
+It uses **Terraform** (the `aws` and `awscc` providers) and a few shell
+scripts to build, prove, renew and tear down the lab.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="architecture-dark.svg">
@@ -26,7 +48,41 @@ to build, prove, renew and tear down the lab.
 
 Regenerate the diagrams with `python make_diagram.py`.
 
-## How it works
+## Where each certificate goes
+
+There are three ways to run HTTPS for a site on EC2, and they differ in which
+certificates exist and who renews them:
+
+| Option | Client sees | Load balancer to instance | Certificate on the instance | Who renews | Shown by |
+|---|---|---|---|---|---|
+| **a** | ACM cert on the load balancer | plain HTTP | none | ACM | scenarios 2 and 3, backend A |
+| **b** | ACM cert on the load balancer | TLS again | self-signed, ten years | ACM; nobody for the backend | scenarios 2 and 3, backend C |
+| **c** | the instance's own cert | (no load balancer) | public, 45 days | certbot, against ACM's ACME endpoint | scenario 1, phases 1 and 2 |
+
+* **Options a and b** keep the public certificate where AWS manages it. In
+  November 2026 ACM already issues load balancer certificates for about 198
+  days, under the 200-day limit, and it will keep shortening them without any
+  change on your side. ACM certificates cannot leave AWS, so this only covers
+  what sits behind ELB, CloudFront or API Gateway.
+* **Option b** adds encryption on the last hop. Because no load balancer
+  validates the target, the backend certificate is not part of the
+  apocalypse: issue it once for ten years and forget it.
+* **Option c** is the case lifetimes really hurt: a public certificate on a
+  machine AWS does not manage. Something on the instance has to renew it every
+  few weeks, reload the web server, and do it without anyone watching. That
+  is an ACME client's whole job, and ACM's ACME endpoint lets it do that
+  against Amazon's CA with AWS-side approval and inventory.
+
+The lab builds all three side by side: **scenario 1** is option c, and
+**scenarios 2 and 3** put options a and b behind an ALB and an NLB.
+
+## Scenario 1: ACME on the instance (option c)
+
+A small EC2 instance runs **certbot**, which requests its certificate from
+ACM's ACME endpoint. **NGINX** serves it on port 443, and **Apache** produces
+the page behind it on `127.0.0.1:8080`. The private key is generated on the
+instance and **never leaves it**. ACM still records every certificate in its
+inventory, with a stable ARN across renewals.
 
 ACM's ACME support splits the job in two:
 
@@ -36,6 +92,11 @@ ACM's ACME support splits the job in two:
 * **The server (phase 2, `02-server/`)** runs an ordinary ACME client
   (certbot) against the endpoint's directory URL, the same way it would talk to
   Let's Encrypt.
+
+That split is what makes short lifetimes livable in a company: approving a
+name is a one-time administrator decision made in AWS, while issuance and
+every renewal after it are automatic on the server, with no challenge to
+answer and no person in the loop.
 
 The steps, in order:
 
@@ -59,6 +120,9 @@ The steps, in order:
    closed and certbot never touches DNS. ACM issues within about two minutes.
 6. **Serve.** NGINX starts on 443 with the certificate and proxies to Apache.
    A certbot deploy hook reloads NGINX after every issuance and renewal.
+7. **Renew.** Ubuntu's `certbot.timer` renews the certificate when it has 30
+   days left, so a 45-day certificate is replaced about every two weeks.
+   `renew.sh` forces one renewal to show it happening live.
 
 ### What the certificate looks like
 
@@ -66,14 +130,15 @@ The steps, in order:
 |---|---|
 | Issuer | Amazon (`Amazon ECDSA 256 S…`), Amazon Trust Services chain |
 | Key | ECDSA P-256, generated by certbot on the instance |
-| Validity | **45 days** (renewed by certbot, not by ACM) |
+| Validity | **45 days**, already shorter than the 2029 limit (renewed by certbot, not by ACM) |
 | In ACM | Listed with `CertificateKeyPairOrigin = ACME` |
 | ARN | Stays the same when the same ACME account renews the same names |
 
 ### Limits to know
 
 * ACME certificates **cannot** be attached to ELB, CloudFront or API Gateway;
-  AWS never holds the key. Use a normal ACM certificate for those.
+  AWS never holds the key. Use a normal ACM certificate for those (options a
+  and b).
 * `ExportCertificate`, `RenewCertificate` and `RevokeCertificate` do not apply.
   Revocation goes through the ACME endpoint (`certbot revoke`).
 * ACM will not **delete** an ACME certificate before it expires. It removes it
@@ -81,26 +146,17 @@ The steps, in order:
 * `hashicorp/aws` has no ACME resources yet, so phase 1 uses the `awscc`
   provider for the three ACME resources.
 
-## Behind a load balancer (scenarios 2 and 3)
+## Scenarios 2 and 3: behind a load balancer (options a and b)
 
-Public certificate lifetimes are shrinking. Under the CA/Browser Forum's
-schedule the maximum drops to 200 days in March 2026, 100 days in March 2027
-and **47 days in March 2029**. Every certificate on a server is then something
-to renew every few weeks, so it is worth knowing which certificates actually
-have to be public, and which ones nobody checks.
+Phase 3 (`03-lb/`) builds its own VPC with an **ALB** and an **NLB**. Both
+end TLS with a regular DNS-validated ACM certificate and forward to three
+private NGINX backends:
 
-There are three ways to run HTTPS for a site on EC2:
-
-| Option | Client sees | Load balancer to instance | Certificate on the instance | Shown by |
-|---|---|---|---|---|
-| **a** | ACM cert on the load balancer | plain HTTP | none | scenarios 2 and 3, backend A |
-| **b** | ACM cert on the load balancer | TLS again | self-signed, long-lived | scenarios 2 and 3, backends B and C |
-| **c** | the instance's own cert | (no load balancer) | public, auto-renewed by certbot | scenario 1, phases 1 and 2 |
-
-Options a and b need no certificate work on the instance at all: ACM renews
-the load balancer's certificate by itself, however short lifetimes get. (In
-November 2026 ACM already issues it for about 198 days, under the 200-day
-limit.) Option c is where ACME matters, and the earlier phases show it.
+* **Backend A** speaks plain HTTP (option a).
+* **Backend B** serves a self-signed certificate that is **expired and names
+  the wrong host**. It exists to prove that nobody checks.
+* **Backend C** serves a ten-year self-signed certificate (option b). This is
+  the pattern to copy.
 
 ### The load balancers do not check the target's certificate
 
@@ -113,11 +169,11 @@ for both the ALB and the NLB, and this lab proves it. Backend B's certificate:
 * is named `nobody-checks-this.invalid`, so it matches no lab host name;
 * expired on 1 January 2025.
 
-Both load balancers report the target healthy and serve its page. For a video
-about 47-day certificates, that is the useful part: the certificate behind a
-load balancer only has to exist, so it can be a ten-year self-signed one and
-never needs renewing. What it buys is encryption on the last hop, not proof
-of who is on the other end; the security groups do that job.
+Both load balancers report the target healthy and serve its page. That is the
+useful part for the 47-day era: the certificate behind a load balancer only
+has to exist, so it can be a ten-year self-signed one and never needs
+renewing. What it buys is encryption on the last hop, not proof of who is on
+the other end; the security groups do that job.
 
 **Backend C is the pattern to copy.** It serves the same kind of self-signed
 certificate, but named `tls-backend.internal` and valid for ten years, so it
@@ -353,18 +409,19 @@ ten-year version.
 ./renew.sh
 ```
 
-Forces one `certbot renew` on the instance through SSM, then shows the
-rotation:
+This is what the 47-day world looks like when it works: a renewal nobody
+notices. The script forces one `certbot renew` on the instance through SSM,
+then shows the rotation while the site keeps serving:
 
 ```
-NOTE: Serial before:   435BFD7E229C2D0A79240C00C8AEB6B7
-NOTE: ACM ARN before:  arn:aws:acm:us-east-1:<account>:certificate/8d074e6d-…
+NOTE: Serial before:   4170AEF27C762ECBC4EBDFA4A03F8BC6
+NOTE: ACM ARN before:  arn:aws:acm:us-east-1:<account>:certificate/eb755a0c-…
 
 NOTE: Forcing certbot renewal on i-0….
 NOTE: certbot renewal succeeded.
 
-NOTE: Serial after:    449852B1D9796DDC0134E54F827B545A
-NOTE: ACM ARN after:   arn:aws:acm:us-east-1:<account>:certificate/8d074e6d-…
+NOTE: Serial after:    41DDF278F43C112E9A1D9E4D1F0519C4
+NOTE: ACM ARN after:   arn:aws:acm:us-east-1:<account>:certificate/eb755a0c-…
 
 NOTE: NGINX is serving the renewed certificate.
 NOTE: ACM kept the same certificate ARN across the renewal.
