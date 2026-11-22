@@ -35,9 +35,8 @@ provider "awscc" {
 # ==============================================================================
 
 variable "zone_name" {
-  description = "Existing public Route 53 hosted zone"
+  description = "Existing public Route 53 hosted zone. Set in lab.env (TF_VAR_zone_name)."
   type        = string
-  default     = "mikes-cloud-solutions.com"
 }
 
 variable "host_name" {

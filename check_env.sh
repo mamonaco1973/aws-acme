@@ -7,7 +7,7 @@
 # delegation set. ACM validation and the public site both depend on it.
 # ==============================================================================
 
-ZONE_NAME="mikes-cloud-solutions.com"
+source "$(dirname "$0")/lab.env"
 
 echo "NOTE: Validating that required commands are found in your PATH."
 commands=("aws" "terraform" "jq" "openssl" "curl" "dig")

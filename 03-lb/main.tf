@@ -33,9 +33,8 @@ provider "aws" {
 # ==============================================================================
 
 variable "zone_name" {
-  description = "Existing public Route 53 hosted zone (same as 01-acme)"
+  description = "Existing public Route 53 hosted zone (same as 01-acme). Set in lab.env (TF_VAR_zone_name)."
   type        = string
-  default     = "mikes-cloud-solutions.com"
 }
 
 variable "alb_host_name" {

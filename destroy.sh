@@ -18,6 +18,9 @@ export AWS_DEFAULT_REGION="us-east-1"
 # AWS_REGION, if set in the caller's shell, overrides AWS_DEFAULT_REGION.
 export AWS_REGION="us-east-1"
 
+# Same zone name apply.sh used.
+source ./lab.env
+
 # Read phase 1 outputs before that state is destroyed.
 endpoint_arn=$(terraform -chdir=01-acme output -raw acme_endpoint_arn 2>/dev/null || true)
 fqdn=$(terraform -chdir=01-acme output -raw fqdn 2>/dev/null || true)

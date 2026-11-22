@@ -22,6 +22,9 @@ export AWS_DEFAULT_REGION="us-east-1"
 # AWS_REGION, if set in the caller's shell, overrides AWS_DEFAULT_REGION.
 export AWS_REGION="us-east-1"
 
+# The hosted zone name, shared by check_env.sh and both Terraform phases.
+source ./lab.env
+
 ./check_env.sh
 
 # ==============================================================================

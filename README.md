@@ -135,6 +135,7 @@ ten-year certificate):
 | `valid10y` | `CN=tls-backend.internal`, valid for ten years from the day before boot |
 
 ```bash
+source lab.env      # sets TF_VAR_zone_name for Terraform
 terraform -chdir=03-lb apply -var backend_cert_mode=valid10y
 ```
 
@@ -185,9 +186,9 @@ data signs it with `openssl ca -selfsign -startdate … -enddate …`.)
 
 * [An AWS Account](https://aws.amazon.com/console/)
 * A **public Route 53 hosted zone** for your domain, delegated from the
-  registrar. This lab uses `mikes-cloud-solutions.com`; change `zone_name` and
-  `host_name` in `01-acme/main.tf`, and `zone_name` in `03-lb/main.tf`, for
-  your own.
+  registrar. This lab uses `mikes-cloud-solutions.com`; set `ZONE_NAME` in
+  `lab.env` (the only place it lives) to use your own. The host labels
+  (`acme-lab`, `alb-lab`, `nlb-lab`) are Terraform variables with defaults.
 * [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
 * [Terraform](https://developer.hashicorp.com/terraform/install)
 * `jq`, `openssl`, `curl` and `dig` in PATH
@@ -426,6 +427,7 @@ The hosted zone and its other records are never touched.
 | `03-lb/alb.tf` | ALB, HTTPS listener, `/http/`, `/tls/` and `/tls10y/` rules, alias record |
 | `03-lb/nlb.tf` | NLB, TLS:443, TLS:8443 and TLS:9443 listeners, alias record, outputs |
 | `03-lb/scripts/backend.sh.tpl` | NGINX, diagnostic page, self-signed certificate |
+| `lab.env` | The hosted zone name, sourced by the scripts and passed to Terraform |
 | `apply.sh` / `validate.sh` / `renew.sh` / `destroy.sh` | Lab lifecycle |
 | `make_diagram.py` | Regenerates `architecture-{light,dark}.svg` |
 
