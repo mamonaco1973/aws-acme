@@ -6,6 +6,11 @@
 #      body says Apache served it through NGINX.
 #   2. The certificate NGINX presents: issuer, serial, validity.
 #   3. The same certificate in ACM, with key pair origin ACME.
+#   4. Scenario 2 (ALB) and scenario 3 (NLB): each of the six load balancer
+#      paths returns 200, and the page shows which backend answered and what
+#      it received. Backend B's certificate is expired and names the wrong
+#      host, and both load balancers use it anyway. Backend C's is a sane
+#      ten-year self-signed certificate: the pattern to copy.
 # ==============================================================================
 
 set -euo pipefail
@@ -87,3 +92,120 @@ else
   echo "WARN: No ACM certificate found for this endpoint."
 fi
 echo ""
+
+# ==============================================================================
+# SCENARIOS 2 AND 3: LOAD BALANCERS
+# ==============================================================================
+
+alb_fqdn=$(terraform -chdir=03-lb output -raw alb_fqdn)
+nlb_fqdn=$(terraform -chdir=03-lb output -raw nlb_fqdn)
+alb_dns=$(terraform -chdir=03-lb output -raw alb_dns_name)
+nlb_dns=$(terraform -chdir=03-lb output -raw nlb_dns_name)
+
+failed=0
+
+# Read one value back from the diagnostic page by its id.
+page_field() {
+  sed -n "s/.*<td id=\"$1\">\(.*\)<\/td>.*/\1/p" <<<"${page}" | head -n 1
+}
+
+# ------------------------------------------------------------------------------
+# check_endpoint LABEL HOST LB_DNS PORT PATH EXPECTED_BACKEND
+# ------------------------------------------------------------------------------
+# Like the scenario 1 check, --resolve pins the lab name to one of the load
+# balancer's own addresses, so a fresh alias record that has not reached the
+# local resolver cannot fail the check. Certificate checking stays normal:
+# the client must trust the front certificate for the lab name.
+# ------------------------------------------------------------------------------
+
+check_endpoint() {
+  local label=$1 host=$2 lb_dns=$3 port=$4 path=$5 expected=$6
+  local url="https://${host}${path}"
+  [[ "${port}" != "443" ]] && url="https://${host}:${port}${path}"
+
+  local code="000" ip=""
+  page=""
+  for i in $(seq 1 30); do
+    ip=$(dig +short "${lb_dns}" | grep -E '^[0-9.]+$' | head -n 1 || true)
+    if [[ -n "${ip}" ]]; then
+      page=$(curl -sS --max-time 10 -w '\n%{http_code}' \
+        --resolve "${host}:${port}:${ip}" "${url}" 2>/dev/null || true)
+      code=$(tail -n 1 <<<"${page}")
+      [[ "${code}" == "200" ]] && break
+    fi
+    sleep 10
+  done
+
+  echo "${label}"
+  printf "NOTE: %-18s %s\n" "URL:" "${url}"
+
+  if [[ "${code}" != "200" ]]; then
+    echo "ERROR: ${url} returned HTTP ${code:-none} after 5 minutes."
+    echo ""
+    failed=$((failed + 1))
+    return
+  fi
+
+  local backend front_issuer
+  backend=$(sed -n 's/.*data-backend="\([^"]*\)".*/\1/p' <<<"${page}" | head -n 1)
+  front_issuer=$(openssl s_client -connect "${ip}:${port}" -servername "${host}" \
+    </dev/null 2>/dev/null | openssl x509 -noout -issuer | cut -d= -f2-)
+
+  printf "NOTE: %-18s %s\n" "HTTP status:" "${code}"
+  printf "NOTE: %-18s %s\n" "Backend:" "${backend}"
+  printf "NOTE: %-18s %s\n" "Scheme at backend:" "$(page_field scheme)"
+  printf "NOTE: %-18s %s\n" "Front cert issuer:" "${front_issuer}"
+  printf "NOTE: %-18s %s\n" "NGINX saw client:" "$(page_field client)"
+  printf "NOTE: %-18s %s\n" "X-Forwarded-For:" "$(page_field xff)"
+
+  if [[ "${backend}" != "${expected}" ]]; then
+    echo "ERROR: Expected backend ${expected}, got ${backend:-nothing}."
+    failed=$((failed + 1))
+  fi
+
+  if [[ "${backend}" == self-signed* ]]; then
+    local subject san status
+    subject=$(page_field cert_subject)
+    san=$(page_field cert_san)
+    status=$(page_field cert_status)
+
+    printf "NOTE: %-18s %s\n" "Backend cert:" "${subject}"
+    printf "NOTE: %-18s %s\n" "Backend not after:" "$(page_field cert_not_after)"
+
+    if [[ "${san}" != *"${host}"* && "${status}" == "EXPIRED" ]]; then
+      echo "NOTE: Backend cert is EXPIRED and wrong-name; the load balancer accepted it anyway."
+    elif [[ "${status}" != "EXPIRED" ]]; then
+      echo "NOTE: Backend cert is self-signed and in date; nothing has to renew it for years."
+    fi
+  fi
+  echo ""
+}
+
+echo "============================================================================"
+echo "Scenario 2 - ALB, ACM certificate on the load balancer"
+echo "============================================================================"
+echo ""
+
+check_endpoint "ALB /http/    -> HTTP:80 -> backend A (option a)" \
+  "${alb_fqdn}" "${alb_dns}" 443 "/http/" "plain"
+check_endpoint "ALB /tls/     -> HTTPS:443 -> backend B (option b, expired)" \
+  "${alb_fqdn}" "${alb_dns}" 443 "/tls/" "self-signed"
+check_endpoint "ALB /tls10y/  -> HTTPS:443 -> backend C (option b, ten-year)" \
+  "${alb_fqdn}" "${alb_dns}" 443 "/tls10y/" "self-signed-10y"
+
+echo "============================================================================"
+echo "Scenario 3 - NLB, ACM certificate on the load balancer"
+echo "============================================================================"
+echo ""
+
+check_endpoint "NLB :443      -> TCP:80 -> backend A (option a)" \
+  "${nlb_fqdn}" "${nlb_dns}" 443 "/" "plain"
+check_endpoint "NLB :8443     -> TLS:443 -> backend B (option b, expired)" \
+  "${nlb_fqdn}" "${nlb_dns}" 8443 "/" "self-signed"
+check_endpoint "NLB :9443     -> TLS:443 -> backend C (option b, ten-year)" \
+  "${nlb_fqdn}" "${nlb_dns}" 9443 "/" "self-signed-10y"
+
+if [[ ${failed} -gt 0 ]]; then
+  echo "ERROR: ${failed} load balancer check(s) failed."
+  exit 1
+fi

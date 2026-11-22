@@ -78,14 +78,22 @@ cat > /var/www/html/index.html <<'EOF'
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ACM ACME Lab</title>
   <style>
+    /* Follows the browser's light or dark preference. */
+    :root { color-scheme: light dark;
+            --bg: #f7f9fb; --panel: #ffffff; --text: #1f2933;
+            --muted: #52606d; --rule: #e4e7eb; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0d1117; --panel: #161b22; --text: #e6edf3;
+              --muted: #9ba7b4; --rule: #30363d; }
+    }
     body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 3rem auto;
-           padding: 0 1rem; color: #1f2933; background: #f7f9fb; }
+           padding: 0 1rem; color: var(--text); background: var(--bg); }
     h1 { margin-bottom: .25rem; }
-    .sub { color: #52606d; margin-top: 0; }
-    table { border-collapse: collapse; width: 100%; margin: 1rem 0 2rem; background: #fff; }
-    th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid #e4e7eb;
+    .sub { color: var(--muted); margin-top: 0; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0 2rem; background: var(--panel); }
+    th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--rule);
              vertical-align: top; }
-    th { width: 14rem; color: #52606d; font-weight: 600; }
+    th { width: 14rem; color: var(--muted); font-weight: 600; }
     td { font-family: ui-monospace, monospace; word-break: break-all; }
   </style>
 </head>

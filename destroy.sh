@@ -4,7 +4,8 @@
 #
 #   1. Revoke the certificate from the server, since its private key is
 #      about to be destroyed with the instance.
-#   2. Destroy the server phase, then the ACME phase.
+#   2. Destroy the load balancer phase, the server phase, then the ACME
+#      phase.
 #   3. Clean up what Terraform does not own: the certificates ACM keeps in
 #      its inventory, and the validation CNAME if ACM left it behind.
 #
@@ -56,7 +57,22 @@ if [[ -n "${instance_id}" ]]; then
 fi
 
 # ==============================================================================
-# STEP 2: DESTROY THE SERVER (02-server)
+# STEP 2: DESTROY THE LOAD BALANCERS (03-lb)
+# ==============================================================================
+#
+# Terraform owns everything in this phase, including its ACM certificate and
+# the certificate's DNS validation records, so destroy removes them all.
+# ==============================================================================
+
+echo "NOTE: Destroying the load balancers and their backends."
+
+cd 03-lb
+terraform init
+terraform destroy -auto-approve
+cd ..
+
+# ==============================================================================
+# STEP 3: DESTROY THE SERVER (02-server)
 # ==============================================================================
 
 echo "NOTE: Destroying the web server."
@@ -67,7 +83,7 @@ terraform destroy -auto-approve
 cd ..
 
 # ==============================================================================
-# STEP 3: DESTROY THE ACME ENDPOINT (01-acme)
+# STEP 4: DESTROY THE ACME ENDPOINT (01-acme)
 # ==============================================================================
 
 echo "NOTE: Destroying the ACM ACME endpoint."
@@ -78,7 +94,7 @@ terraform destroy -auto-approve
 cd ..
 
 # ==============================================================================
-# STEP 4: ACM CERTIFICATE INVENTORY
+# STEP 5: ACM CERTIFICATE INVENTORY
 # ==============================================================================
 #
 # Issued certificates stay in ACM after the endpoint is gone. ACM may refuse
@@ -100,7 +116,7 @@ if [[ -n "${endpoint_arn}" ]]; then
 fi
 
 # ==============================================================================
-# STEP 5: VALIDATION CNAME
+# STEP 6: VALIDATION CNAME
 # ==============================================================================
 #
 # ACM wrote the domain validation CNAME into the zone itself, so Terraform

@@ -8,12 +8,20 @@ port 443, and **Apache** produces the page behind it on `127.0.0.1:8080`.
 The private key is generated on the instance and **never leaves it**. ACM still
 records every certificate in its inventory, with a stable ARN across renewals.
 
+A third phase puts the same question behind a load balancer. An **ALB** and an
+**NLB** end TLS with a regular ACM certificate and forward to three NGINX
+backends: one plain HTTP, one with a **self-signed certificate that is expired
+and names the wrong host**, and one with a ten-year self-signed certificate.
+Both load balancers use the broken one anyway, because neither checks the
+certificate a target presents, which makes the ten-year one the pattern to
+copy.
+
 It uses **Terraform** (the `aws` and `awscc` providers) and a few shell scripts
 to build, prove, renew and tear down the lab.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="architecture-dark.svg">
-  <img alt="A browser reaches NGINX on an EC2 instance over HTTPS and NGINX proxies to Apache. certbot on the instance reads the EAB key once, sends ACME orders to the ACM ACME endpoint and reloads NGINX when a certificate lands. The endpoint approved the domain through a Route 53 validation CNAME and records each issued certificate in ACM" src="architecture-light.svg">
+  <img alt="A browser reaches NGINX on an EC2 instance over HTTPS and NGINX proxies to Apache. certbot on the instance reads the EAB key once, sends ACME orders to the ACM ACME endpoint and reloads NGINX when a certificate lands. The endpoint approved the domain through a Route 53 validation CNAME and records each issued certificate in ACM. Below, in a second VPC, an ALB and an NLB end TLS with a regular ACM certificate and forward to a plain HTTP backend, to a backend whose self-signed certificate is expired and names the wrong host, and to a backend with a ten-year self-signed certificate; neither load balancer checks the backend certificate" src="architecture-light.svg">
 </picture>
 
 Regenerate the diagrams with `python make_diagram.py`.
@@ -73,12 +81,113 @@ The steps, in order:
 * `hashicorp/aws` has no ACME resources yet, so phase 1 uses the `awscc`
   provider for the three ACME resources.
 
+## Behind a load balancer (scenarios 2 and 3)
+
+Public certificate lifetimes are shrinking. Under the CA/Browser Forum's
+schedule the maximum drops to 200 days in March 2026, 100 days in March 2027
+and **47 days in March 2029**. Every certificate on a server is then something
+to renew every few weeks, so it is worth knowing which certificates actually
+have to be public, and which ones nobody checks.
+
+There are three ways to run HTTPS for a site on EC2:
+
+| Option | Client sees | Load balancer to instance | Certificate on the instance | Shown by |
+|---|---|---|---|---|
+| **a** | ACM cert on the load balancer | plain HTTP | none | scenarios 2 and 3, backend A |
+| **b** | ACM cert on the load balancer | TLS again | self-signed, long-lived | scenarios 2 and 3, backends B and C |
+| **c** | the instance's own cert | (no load balancer) | public, auto-renewed by certbot | scenario 1, phases 1 and 2 |
+
+Options a and b need no certificate work on the instance at all: ACM renews
+the load balancer's certificate by itself, however short lifetimes get. (In
+November 2026 ACM already issues it for about 198 days, under the 200-day
+limit.) Option c is where ACME matters, and the earlier phases show it.
+
+### The load balancers do not check the target's certificate
+
+With option b, the load balancer opens a TLS connection to the instance and
+encrypts the hop inside the VPC, but **it does not validate the certificate it
+gets back**: not the issuer, not the name, not the dates. That is documented
+for both the ALB and the NLB, and this lab proves it. Backend B's certificate:
+
+* is self-signed, so no client trusts its issuer;
+* is named `nobody-checks-this.invalid`, so it matches no lab host name;
+* expired on 1 January 2025.
+
+Both load balancers report the target healthy and serve its page. For a video
+about 47-day certificates, that is the useful part: the certificate behind a
+load balancer only has to exist, so it can be a ten-year self-signed one and
+never needs renewing. What it buys is encryption on the last hop, not proof
+of who is on the other end; the security groups do that job.
+
+**Backend C is the pattern to copy.** It serves the same kind of self-signed
+certificate, but named `tls-backend.internal` and valid for ten years, so it
+encrypts the hop without tripping scanners, auditors or anyone debugging with
+`curl`, and nothing has to renew it for a decade. Backend B exists only to
+prove the point.
+
+The variable `backend_cert_mode` in `03-lb/main.tf` switches backend B
+between the broken certificate and a sane one (backend C always has the
+ten-year certificate):
+
+| `backend_cert_mode` | Backend B certificate |
+|---|---|
+| `expired` (default) | `CN=nobody-checks-this.invalid`, valid 2024-01-01 to 2025-01-01 |
+| `valid10y` | `CN=tls-backend.internal`, valid for ten years from the day before boot |
+
+```bash
+terraform -chdir=03-lb apply -var backend_cert_mode=valid10y
+```
+
+Changing it rebuilds backend B with the other certificate. (OpenSSL 3.0 on
+Ubuntu 24.04 cannot backdate a certificate with `openssl req -x509`, so user
+data signs it with `openssl ca -selfsign -startdate … -enddate …`.)
+
+### Paths through the lab
+
+| URL | Load balancer | Target group | Backend | Backend sees |
+|---|---|---|---|---|
+| `https://alb-lab.<zone>/http/` | ALB, HTTPS:443 | HTTP:80 | A, plain | `http`, ALB address, `X-Forwarded-For` set |
+| `https://alb-lab.<zone>/tls/` | ALB, HTTPS:443 | HTTPS:443 | B, self-signed | `https`, ALB address, `X-Forwarded-For` set |
+| `https://alb-lab.<zone>/tls10y/` | ALB, HTTPS:443 | HTTPS:443 | C, ten-year | `https`, ALB address, `X-Forwarded-For` set |
+| `https://nlb-lab.<zone>/` | NLB, TLS:443 | TCP:80 | A, plain | `http`, **real client IP**, no `X-Forwarded-For` |
+| `https://nlb-lab.<zone>:8443/` | NLB, TLS:8443 | TLS:443 | B, self-signed | `https`, **real client IP**, no `X-Forwarded-For` |
+| `https://nlb-lab.<zone>:9443/` | NLB, TLS:9443 | TLS:443 | C, ten-year | `https`, **real client IP**, no `X-Forwarded-For` |
+
+* The ALB routes by path prefix and answers anything else with a fixed 404. It
+  speaks HTTP, so it adds `X-Forwarded-For` and `X-Forwarded-Proto`, and the
+  backend sees the ALB's own private address as the client.
+* The NLB passes bytes, not HTTP, so it adds no headers. Its targets are
+  registered by instance ID, which keeps the client's own IP as the source
+  address, so NGINX sees the real client directly.
+* All three backends serve the same diagnostic page at any path: which
+  backend answered, the scheme and TLS version it received, the request path,
+  the client address NGINX saw, the forwarded headers, and (backends B and C)
+  the certificate it serves. NGINX fills the page in per request with
+  `sub_filter`; there is no Apache or application server in this phase. Like
+  the phase 2 page, it follows the browser's light or dark setting.
+* The backends sit in **private subnets with no public IP**. The load
+  balancers are the only way in, and a NAT gateway is the only way out (apt
+  and SSM). On top of that, their security group admits ports 80 and 443 only
+  from the ALB's and the NLB's security groups. The NLB's security group is
+  attached when it is created, which is the only time an NLB can get one.
+* That is the contrast with scenario 1: `acme-web` has to be public, because
+  browsers connect to it directly and it presents the public certificate
+  itself. Behind a load balancer the instances never face a client, so they
+  need neither a public address nor a public certificate. The lab runs one
+  NAT gateway to keep the cost down; production would run one per
+  Availability Zone.
+* The load balancer certificate is a regular **DNS-validated ACM
+  certificate** covering `alb-lab` and `nlb-lab`. It cannot be an ACME
+  certificate from phase 1: AWS never holds an ACME certificate's private key,
+  so those cannot be attached to ELB.
+
 ## Prerequisites
 
 * [An AWS Account](https://aws.amazon.com/console/)
 * A **public Route 53 hosted zone** for your domain, delegated from the
   registrar. This lab uses `mikes-cloud-solutions.com`; change `zone_name` and
-  `host_name` in `01-acme/main.tf` for your own.
+  `host_name` in `01-acme/main.tf`, and `zone_name` in `03-lb/main.tf`, for
+  your own.
 * [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
 * [Terraform](https://developer.hashicorp.com/terraform/install)
 * `jq`, `openssl`, `curl` and `dig` in PATH
@@ -107,9 +216,18 @@ cd aws-acme
    instance, Elastic IP and the `acme-lab` A record.
 4. Waits, through SSM Run Command, for the instance to finish its user data:
    packages, certificate, NGINX.
-5. `validate.sh`.
+5. `terraform apply` in `03-lb/`: a second VPC with public and private
+   subnets and a NAT gateway, the ACM certificate and its DNS validation, the three backends, the ALB, the NLB
+   and the `alb-lab` and `nlb-lab` alias records.
+6. Waits, the same way, for all three backends to finish their user data, then for
+   all six target groups to report their target healthy.
+7. `validate.sh`.
 
-Total time is about 4 minutes.
+Total time is about 11 minutes: phases 1 and 2 take about 4, phase 3 about 7.
+The ALB and NLB take about two and a half minutes each to create (in
+parallel), and the target groups another minute or two to see their targets
+healthy. ACM validates the load balancer certificate within seconds of its
+DNS records appearing.
 
 ## Validate
 
@@ -143,6 +261,90 @@ host=acme-lab.mikes-cloud-solutions.com
 openssl s_client -connect "$host:443" -servername "$host" </dev/null 2>/dev/null |
   openssl x509 -noout -issuer -serial -enddate
 ```
+
+The script then checks the six load balancer paths. Every one has to return
+200 and come from the expected backend, or the script fails:
+
+```
+============================================================================
+Scenario 2 - ALB, ACM certificate on the load balancer
+============================================================================
+
+ALB /http/    -> HTTP:80 -> backend A (option a)
+NOTE: URL:               https://alb-lab.mikes-cloud-solutions.com/http/
+NOTE: HTTP status:       200
+NOTE: Backend:           plain
+NOTE: Scheme at backend: http
+NOTE: Front cert issuer: C=US, O=Amazon, CN=Amazon RSA 2048 S19
+NOTE: NGINX saw client:  10.0.1.117
+NOTE: X-Forwarded-For:   203.0.113.10
+
+ALB /tls/     -> HTTPS:443 -> backend B (option b, expired)
+NOTE: URL:               https://alb-lab.mikes-cloud-solutions.com/tls/
+NOTE: HTTP status:       200
+NOTE: Backend:           self-signed
+NOTE: Scheme at backend: https
+NOTE: Front cert issuer: C=US, O=Amazon, CN=Amazon RSA 2048 S19
+NOTE: NGINX saw client:  10.0.1.52
+NOTE: X-Forwarded-For:   203.0.113.10
+NOTE: Backend cert:      CN = nobody-checks-this.invalid
+NOTE: Backend not after: Jan  1 00:00:00 2025 GMT
+NOTE: Backend cert is EXPIRED and wrong-name; the load balancer accepted it anyway.
+
+ALB /tls10y/  -> HTTPS:443 -> backend C (option b, ten-year)
+NOTE: URL:               https://alb-lab.mikes-cloud-solutions.com/tls10y/
+NOTE: HTTP status:       200
+NOTE: Backend:           self-signed-10y
+NOTE: Scheme at backend: https
+NOTE: Front cert issuer: C=US, O=Amazon, CN=Amazon RSA 2048 S19
+NOTE: NGINX saw client:  10.0.1.117
+NOTE: X-Forwarded-For:   203.0.113.10
+NOTE: Backend cert:      CN = tls-backend.internal
+NOTE: Backend not after: Nov 22 00:19:44 2036 GMT
+NOTE: Backend cert is self-signed and in date; nothing has to renew it for years.
+
+============================================================================
+Scenario 3 - NLB, ACM certificate on the load balancer
+============================================================================
+
+NLB :443      -> TCP:80 -> backend A (option a)
+NOTE: URL:               https://nlb-lab.mikes-cloud-solutions.com/
+NOTE: HTTP status:       200
+NOTE: Backend:           plain
+NOTE: Scheme at backend: http
+NOTE: Front cert issuer: C=US, O=Amazon, CN=Amazon RSA 2048 S19
+NOTE: NGINX saw client:  203.0.113.10
+NOTE: X-Forwarded-For:   (not set)
+
+NLB :8443     -> TLS:443 -> backend B (option b, expired)
+NOTE: URL:               https://nlb-lab.mikes-cloud-solutions.com:8443/
+NOTE: HTTP status:       200
+NOTE: Backend:           self-signed
+NOTE: Scheme at backend: https
+NOTE: Front cert issuer: C=US, O=Amazon, CN=Amazon RSA 2048 S19
+NOTE: NGINX saw client:  203.0.113.10
+NOTE: X-Forwarded-For:   (not set)
+NOTE: Backend cert:      CN = nobody-checks-this.invalid
+NOTE: Backend not after: Jan  1 00:00:00 2025 GMT
+NOTE: Backend cert is EXPIRED and wrong-name; the load balancer accepted it anyway.
+
+NLB :9443     -> TLS:443 -> backend C (option b, ten-year)
+NOTE: URL:               https://nlb-lab.mikes-cloud-solutions.com:9443/
+NOTE: HTTP status:       200
+NOTE: Backend:           self-signed-10y
+NOTE: Scheme at backend: https
+NOTE: Front cert issuer: C=US, O=Amazon, CN=Amazon RSA 2048 S19
+NOTE: NGINX saw client:  203.0.113.10
+NOTE: X-Forwarded-For:   (not set)
+NOTE: Backend cert:      CN = tls-backend.internal
+NOTE: Backend not after: Nov 22 00:19:44 2036 GMT
+NOTE: Backend cert is self-signed and in date; nothing has to renew it for years.
+```
+
+The front certificate (issued by Amazon for `alb-lab` and `nlb-lab`) is the
+only one the client checks. Backend B's certificate is broken three ways and
+both load balancers serve its page regardless; backend C's is the sane
+ten-year version.
 
 ## Renew live
 
@@ -181,8 +383,9 @@ expires.
 
 1. Revokes the certificate through the ACME endpoint (`certbot revoke`, via
    SSM), since its private key is about to be destroyed.
-2. Destroys `02-server/`, then `01-acme/`. Deleting the endpoint also deletes
-   its domain validation, and ACM removes the validation CNAME.
+2. Destroys `03-lb/` (its ACM certificate and validation records are
+   Terraform's own), then `02-server/`, then `01-acme/`. Deleting the endpoint
+   also deletes its domain validation, and ACM removes the validation CNAME.
 3. Tries to delete the lab's certificates from ACM. ACM refuses for ACME
    certificates that have not expired. They stay listed as `REVOKED` and are
    removed automatically a year after expiry.
@@ -197,6 +400,13 @@ The hosted zone and its other records are never touched.
   name. See [ACM pricing](https://aws.amazon.com/certificate-manager/pricing/).
 * **EC2:** one `t3.micro`, an 8 GiB gp3 volume and an Elastic IP while the lab
   is up.
+* **Phase 3, per hour while it is up:** an ALB and an NLB (about $0.0225 an
+  hour each plus a small capacity-unit charge), a NAT gateway ($0.045 an hour
+  plus $0.045 per GB through it), three more `t3.micro` instances (about
+  $0.0104 an hour each) with 8 GiB volumes, and public IPv4 addresses for the
+  load balancer nodes and the NAT gateway ($0.005 an hour each). Roughly
+  $0.15 an hour in us-east-1; the NAT gateway is the biggest single line. The
+  load balancer's ACM certificate is free.
 * **Route 53:** the hosted zone you already have, plus queries.
 
 ## Files
@@ -209,6 +419,13 @@ The hosted zone and its other records are never touched.
 | `02-server/role.tf` | Instance role: SSM + read this one EAB |
 | `02-server/server.tf` | Ubuntu 24.04 instance, Elastic IP, A record |
 | `02-server/scripts/userdata.sh.tpl` | Apache, certbot, deploy hook, NGINX |
+| `03-lb/main.tf` | Inputs, including `backend_cert_mode` |
+| `03-lb/network.tf` | Second VPC, public and private subnets, NAT gateway, ALB/NLB/backend security groups |
+| `03-lb/cert.tf` | DNS-validated ACM certificate for `alb-lab` and `nlb-lab` |
+| `03-lb/backends.tf` | Backend role (SSM only) and the three private Ubuntu 24.04 backends |
+| `03-lb/alb.tf` | ALB, HTTPS listener, `/http/`, `/tls/` and `/tls10y/` rules, alias record |
+| `03-lb/nlb.tf` | NLB, TLS:443, TLS:8443 and TLS:9443 listeners, alias record, outputs |
+| `03-lb/scripts/backend.sh.tpl` | NGINX, diagnostic page, self-signed certificate |
 | `apply.sh` / `validate.sh` / `renew.sh` / `destroy.sh` | Lab lifecycle |
 | `make_diagram.py` | Regenerates `architecture-{light,dark}.svg` |
 
@@ -224,3 +441,11 @@ The hosted zone and its other records are never touched.
   `--issuance-timeout 120`.
 * **The certificate has no subject CN.** The host name is only in the Subject
   Alternative Name, so the page and `validate.sh` show the SAN instead.
+* **Keep TLS 1.2 on a TLS backend behind an NLB.** NLB HTTPS health checks
+  fail against targets that only speak TLS 1.3. Backends B and C allow both.
+* **An NLB's security group is a creation-time choice.** One created without a
+  security group can never be given one, and then its targets have to allow
+  the clients' own addresses.
+* **Cross-zone load balancing is on for the NLB.** Each target group has a
+  single instance in one Availability Zone; without cross-zone, the NLB node
+  in the other zone would have no target.

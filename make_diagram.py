@@ -6,9 +6,14 @@ from inline SVG, so a `prefers-color-scheme` media query inside the document
 is silently dropped. The README pairs them with <picture>, which GitHub does
 honour.
 
-  architecture-{light,dark}.svg — the visitor, Route 53, the NGINX + Apache
-                                  server with certbot, and the ACM ACME
-                                  endpoint, binding and certificate inventory
+  architecture-{light,dark}.svg — top: the visitor, Route 53, the NGINX +
+                                  Apache server with certbot, and the ACM ACME
+                                  endpoint, binding and certificate inventory.
+                                  Bottom (phase 3): the ALB and NLB with their
+                                  ACM certificate, the plain, expired
+                                  self-signed and ten-year self-signed
+                                  backends behind both in private subnets,
+                                  and their NAT gateway.
 
 Run:  python make_diagram.py
 """
@@ -62,6 +67,14 @@ ICONS = {
     "key": ['<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 '
             '0-1.4L19 4"/>', '<path d="m21 2-9.6 9.6"/>',
             '<circle cx="7.5" cy="15.5" r="5.5"/>'],
+    "split": ['<path d="M16 3h5v5"/>', '<path d="M8 3H3v5"/>',
+              '<path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/>',
+              '<path d="m15 9 6-6"/>'],
+    "network": ['<rect x="16" y="16" width="6" height="6" rx="1"/>',
+                '<rect x="2" y="16" width="6" height="6" rx="1"/>',
+                '<rect x="9" y="2" width="6" height="6" rx="1"/>',
+                '<path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/>',
+                '<path d="M12 12V8"/>'],
     "files": ['<path d="M20 7h-3a2 2 0 0 1-2-2V2"/>',
               '<path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 '
               '1-2 2Z"/>', '<path d="M3 7.6v12.8A1.6 1.6 0 0 0 4.6 22h9.8"/>'],
@@ -76,19 +89,20 @@ def _esc(s):
 # Layout
 # ================================================================================
 
-AW, AH = 1860, 760
+AW, AH = 1860, 1600
 NH = 96                                    # node height
 TITLE_PX, SUB_PX, EDGE_PX = 24, 16, 16
 
-AWS_BOX = (380, 30, 1440, 700)             # x, y, w, h
+AWS_BOX = (380, 30, 1440, 1540)            # x, y, w, h
 EC2_BOX = (420, 250, 650, 440)
+LB_BOX = (420, 760, 1360, 780)             # phase 3: its own VPC
 
 # id: (x, y, width, colour key, icon, title, subtitle)
 NODES = {
     "visitor":  (40, 330, 290, "purple", "globe", "Browser",
                  "https://acme-lab…"),
     "route53":  (420, 90, 380, "navy", "signpost", "Route 53",
-                 "A record + validation CNAME"),
+                 "A + alias records · validation CNAMEs"),
     "nginx":    (450, 330, 280, "green", "lock", "NGINX :443",
                  "TLS + reverse proxy"),
     "apache":   (760, 330, 280, "red", "server", "Apache",
@@ -101,6 +115,23 @@ NODES = {
                  "issuer role, acme-lab only"),
     "acm":      (1200, 550, 580, "blue", "files", "ACM certificates",
                  "45-day · key pair origin ACME"),
+    # Phase 3
+    "visitor2": (40, 1060, 290, "purple", "globe", "Browser",
+                 "https://alb-lab… / nlb-lab…"),
+    "alb":      (450, 840, 360, "green", "split", "ALB :443",
+                 "HTTPS · path routing"),
+    "lbcert":   (450, 1060, 360, "blue", "files", "ACM certificate",
+                 "DNS-validated · auto-renewed"),
+    "nlb":      (450, 1280, 360, "amber", "network", "NLB :443 · :8443 · :9443",
+                 "TLS listeners"),
+    "plain":    (1290, 840, 440, "navy", "server", "Backend A · NGINX :80",
+                 "plain HTTP (option a)"),
+    "selfsig":  (1290, 1060, 440, "red", "server", "Backend B · NGINX :443",
+                 "self-signed · expired · wrong name"),
+    "tenyear":  (1290, 1280, 440, "green", "server", "Backend C · NGINX :443",
+                 "self-signed · ten years (option b)"),
+    "nat":      (450, 1420, 360, "navy", "network", "NAT gateway",
+                 "public subnet · outbound only"),
 }
 
 
@@ -111,6 +142,11 @@ def _r(nid):
 
 
 _EP_L = _r("endpoint")[0]
+_ALB_R, _NLB_R = _r("alb")[2], _r("nlb")[2]
+_BK_L = _r("plain")[0] - 5                 # all backends share a left edge
+_ALB_Y, _NLB_Y = _r("alb")[5], _r("nlb")[5]
+_ALB_TRUNK, _NLB_TRUNK = 1130, 1010
+_V2_R, _V2_Y = _r("visitor2")[2], _r("visitor2")[5]
 _CB_R = _r("certbot")[2]
 _VIS_CX = _r("visitor")[4]
 
@@ -139,6 +175,37 @@ EDGES = {
                   "pink", "EAB key ID + MAC (once)", 1160, 476, "start", False),
     "e_issue":   (f"M1720,{_r('endpoint')[3]} L1720,{_r('acm')[1] - 5}",
                   "blue", "issued certs", 1710, 470, "end", False),
+    # Phase 3
+    "e_nat":     (f"M{_r('tenyear')[4]},{_r('tenyear')[3]} "
+                  f"V{_r('nat')[5]} H{_r('nat')[2] + 5}", "navy",
+                  "backends' only way out: apt + SSM", _r("tenyear")[4] - 12,
+                  _r("nat")[5] - 12, "end", True),
+    "e_v2alb":   (f"M{_V2_R},{_V2_Y - 20} H372 V{_ALB_Y} H{_r('alb')[0] - 5}",
+                  "purple", "HTTPS", 362, 990, "end", False),
+    "e_v2nlb":   (f"M{_V2_R},{_V2_Y + 20} H372 V{_NLB_Y} H{_r('nlb')[0] - 5}",
+                  "purple", "TLS", 362, 1200, "end", False),
+    "e_certalb": (f"M{_r('lbcert')[4]},{_r('lbcert')[1]} "
+                  f"V{_r('alb')[3] + 5}", "blue", "", 0, 0, "start", True),
+    "e_certnlb": (f"M{_r('lbcert')[4]},{_r('lbcert')[3]} "
+                  f"V{_r('nlb')[1] - 5}", "blue", "", 0, 0, "start", True),
+    "e_albA":    (f"M{_ALB_R},{_ALB_Y - 24} H{_ALB_TRUNK} "
+                  f"V{_r('plain')[5] - 24} H{_BK_L}", "green", "/http/*",
+                  _BK_L - 8, _r("plain")[5] - 32, "end", False),
+    "e_nlbA":    (f"M{_NLB_R},{_NLB_Y + 24} H{_NLB_TRUNK} "
+                  f"V{_r('plain')[5] + 24} H{_BK_L}", "amber", "TLS :443",
+                  _BK_L - 8, _r("plain")[5] + 44, "end", False),
+    "e_albB":    (f"M{_ALB_R},{_ALB_Y - 24} H{_ALB_TRUNK} "
+                  f"V{_r('selfsig')[5] - 24} H{_BK_L}", "green", "/tls/*",
+                  _BK_L - 8, _r("selfsig")[5] - 32, "end", False),
+    "e_nlbB":    (f"M{_NLB_R},{_NLB_Y + 24} H{_NLB_TRUNK} "
+                  f"V{_r('selfsig')[5] + 24} H{_BK_L}", "amber", "TLS :8443",
+                  _BK_L - 8, _r("selfsig")[5] + 44, "end", False),
+    "e_albC":    (f"M{_ALB_R},{_ALB_Y - 24} H{_ALB_TRUNK} "
+                  f"V{_r('tenyear')[5] - 24} H{_BK_L}", "green", "/tls10y/*",
+                  _BK_L - 8, _r("tenyear")[5] - 32, "end", False),
+    "e_nlbC":    (f"M{_NLB_R},{_NLB_Y + 24} H{_NLB_TRUNK} "
+                  f"V{_r('tenyear')[5] + 24} H{_BK_L}", "amber", "TLS :9443",
+                  _BK_L - 8, _r("tenyear")[5] + 44, "end", False),
 }
 
 
@@ -193,7 +260,9 @@ def build_architecture(t):
            f'aria-label="A browser reaches NGINX on an EC2 instance over HTTPS; '
            f'NGINX proxies to Apache. certbot on the instance gets the '
            f'certificate from the ACM ACME endpoint, which approved the domain '
-           f'through a Route 53 CNAME">', "<defs>"]
+           f'through a Route 53 CNAME. Below, an ALB and an NLB end TLS with a '
+           f'regular ACM certificate and forward to a plain HTTP backend and '
+           f'to a backend with an expired self-signed certificate">', "<defs>"]
     # One marker per edge: a shared marker cannot carry per-edge colour.
     for eid, spec in EDGES.items():
         out.append(
@@ -205,6 +274,12 @@ def build_architecture(t):
 
     out.append(_box(AWS_BOX, "AWS · us-east-1", t, dashed=True))
     out.append(_box(EC2_BOX, "EC2 · Ubuntu 24.04 · Elastic IP", t, dashed=False))
+    out.append(_box(LB_BOX, "Phase 3 · own VPC · LBs and NAT public, backends private", t, dashed=False))
+    # The point of phase 3, under the TLS backend.
+    bx, by = _r("selfsig")[0], _r("selfsig")[3]
+    out.append(f'<text x="{bx}" y="{by + 34}" font-family="{FONT}" '
+               f'font-size="{EDGE_PX}" font-weight="600" fill="{t["red"]}">'
+               f'Neither load balancer checks this certificate</text>')
 
     for eid in EDGES:
         out.append(edge_svg(eid, t))
