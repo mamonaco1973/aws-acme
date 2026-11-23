@@ -3,7 +3,7 @@
 # ==============================================================================
 #
 # A regular ACM public certificate, validated through DNS. It cannot be an
-# ACME certificate from phase 1: AWS never holds an ACME certificate's
+# ACME certificate from 01-acme: AWS never holds an ACME certificate's
 # private key, so those cannot be attached to ELB, CloudFront or API
 # Gateway. ACM renews this one by itself, however short public certificate
 # lifetimes get, as long as the validation records stay in place.

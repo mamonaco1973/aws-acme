@@ -1,12 +1,12 @@
 # ==============================================================================
-# NETWORK LOAD BALANCER (scenario 3)
+# NETWORK LOAD BALANCER (options 2 and 3)
 # ==============================================================================
 #
 # Three TLS listeners with the ACM certificate, one per backend:
 #
-#   TLS:443   ->  TCP:80   ->  instance A   (option a: plain to the target)
-#   TLS:8443  ->  TLS:443  ->  instance B   (option b: re-encrypt)
-#   TLS:9443  ->  TLS:443  ->  instance C   (option b, ten-year cert)
+#   TLS:443   ->  TCP:80   ->  plain backend     (option 2)
+#   TLS:8443  ->  TLS:443  ->  broken backend    (test, not an option)
+#   TLS:9443  ->  TLS:443  ->  ten-year backend  (option 3: re-encrypt)
 #
 # An NLB passes bytes, not HTTP, so it adds no X-Forwarded-For. With
 # instance targets it keeps the client's own IP as the source address, so

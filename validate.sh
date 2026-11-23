@@ -6,11 +6,11 @@
 #      body says Apache served it through NGINX.
 #   2. The certificate NGINX presents: issuer, serial, validity.
 #   3. The same certificate in ACM, with key pair origin ACME.
-#   4. Scenario 2 (ALB) and scenario 3 (NLB): each of the six load balancer
-#      paths returns 200, and the page shows which backend answered and what
-#      it received. Backend B's certificate is expired and names the wrong
-#      host, and both load balancers use it anyway. Backend C's is a sane
-#      ten-year self-signed certificate: the pattern to copy.
+#   4. Options 2 and 3 behind the ALB and the NLB: each of the six load
+#      balancer paths returns 200, and the page shows which backend answered
+#      and what it received. The broken backend (a test, not an option) has
+#      an expired, wrong-name certificate, and both load balancers use it
+#      anyway. The ten-year backend (option 3) is the pattern to copy.
 # ==============================================================================
 
 set -euo pipefail
@@ -94,7 +94,7 @@ fi
 echo ""
 
 # ==============================================================================
-# SCENARIOS 2 AND 3: LOAD BALANCERS
+# OPTIONS 2 AND 3: LOAD BALANCERS (plus the broken-backend test)
 # ==============================================================================
 
 alb_fqdn=$(terraform -chdir=03-lb output -raw alb_fqdn)
@@ -112,7 +112,7 @@ page_field() {
 # ------------------------------------------------------------------------------
 # check_endpoint LABEL HOST LB_DNS PORT PATH EXPECTED_BACKEND
 # ------------------------------------------------------------------------------
-# Like the scenario 1 check, --resolve pins the lab name to one of the load
+# Like the option 1 check, --resolve pins the lab name to one of the load
 # balancer's own addresses, so a fresh alias record that has not reached the
 # local resolver cannot fail the check. Certificate checking stays normal:
 # the client must trust the front certificate for the lab name.
@@ -182,27 +182,27 @@ check_endpoint() {
 }
 
 echo "============================================================================"
-echo "Scenario 2 - ALB, ACM certificate on the load balancer"
+echo "ALB - ACM certificate on the load balancer"
 echo "============================================================================"
 echo ""
 
-check_endpoint "ALB /http/    -> HTTP:80 -> backend A (option a)" \
+check_endpoint "ALB /http/    -> HTTP:80 -> plain backend (option 2)" \
   "${alb_fqdn}" "${alb_dns}" 443 "/http/" "plain"
-check_endpoint "ALB /tls/     -> HTTPS:443 -> backend B (option b, expired)" \
+check_endpoint "ALB /tls/     -> HTTPS:443 -> broken backend (test)" \
   "${alb_fqdn}" "${alb_dns}" 443 "/tls/" "self-signed"
-check_endpoint "ALB /tls10y/  -> HTTPS:443 -> backend C (option b, ten-year)" \
+check_endpoint "ALB /tls10y/  -> HTTPS:443 -> ten-year backend (option 3)" \
   "${alb_fqdn}" "${alb_dns}" 443 "/tls10y/" "self-signed-10y"
 
 echo "============================================================================"
-echo "Scenario 3 - NLB, ACM certificate on the load balancer"
+echo "NLB - ACM certificate on the load balancer"
 echo "============================================================================"
 echo ""
 
-check_endpoint "NLB :443      -> TCP:80 -> backend A (option a)" \
+check_endpoint "NLB :443      -> TCP:80 -> plain backend (option 2)" \
   "${nlb_fqdn}" "${nlb_dns}" 443 "/" "plain"
-check_endpoint "NLB :8443     -> TLS:443 -> backend B (option b, expired)" \
+check_endpoint "NLB :8443     -> TLS:443 -> broken backend (test)" \
   "${nlb_fqdn}" "${nlb_dns}" 8443 "/" "self-signed"
-check_endpoint "NLB :9443     -> TLS:443 -> backend C (option b, ten-year)" \
+check_endpoint "NLB :9443     -> TLS:443 -> ten-year backend (option 3)" \
   "${nlb_fqdn}" "${nlb_dns}" 9443 "/" "self-signed-10y"
 
 if [[ ${failed} -gt 0 ]]; then

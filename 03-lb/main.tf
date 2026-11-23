@@ -2,18 +2,19 @@
 # PROVIDER
 # ==============================================================================
 #
-# Phase 3 stands on its own: it reads nothing from 01-acme or 02-server and
+# 03-lb stands on its own: it reads nothing from 01-acme or 02-server and
 # has its own VPC. It shows the two other ways to run HTTPS behind a load
-# balancer, next to scenario 1's certbot-on-the-instance:
+# balancer, next to option 1's certbot-on-the-instance:
 #
-#   option a: the load balancer ends TLS with an ACM certificate and talks
-#             plain HTTP to the instance.
-#   option b: the load balancer ends TLS with an ACM certificate and opens a
+#   option 2: the load balancer ends TLS with an ACM certificate and talks
+#             plain HTTP to the instance (the plain backend).
+#   option 3: the load balancer ends TLS with an ACM certificate and opens a
 #             new TLS connection to the instance, which serves a long-lived
-#             self-signed certificate.
+#             self-signed certificate (the ten-year backend).
 #
-# Both an ALB and an NLB front the same two backends, to show that neither
-# kind of load balancer validates the certificate a target presents.
+# Both an ALB and an NLB front the same backends, plus a broken backend
+# (a test, not an option) that shows neither kind of load balancer
+# validates the certificate a target presents.
 # ==============================================================================
 
 terraform {
@@ -51,7 +52,7 @@ variable "nlb_host_name" {
 
 variable "backend_cert_mode" {
   description = <<-EOT
-    Self-signed certificate on the TLS backend (instance B).
+    Self-signed certificate on the broken backend (a test, not an option).
       expired  - expired in 2025 and named nobody-checks-this.invalid, to
                  prove the load balancers never check it.
       valid10y - a sane ten-year self-signed certificate.

@@ -36,11 +36,12 @@ resource "aws_iam_instance_profile" "backend" {
 # Three Ubuntu 24.04 instances running NGINX alone, in the private subnets
 # with no public IP, all serving the same diagnostic page at any path:
 #
-#   A "plain"           - port 80, plain HTTP                        (option a)
-#   B "self-signed"     - port 443, certificate per backend_cert_mode (option b)
-#   C "self-signed-10y" - port 443, ten-year self-signed certificate  (option b)
+#   plain    "plain"           - port 80, plain HTTP          (option 2)
+#   broken   "self-signed"     - port 443, per backend_cert_mode (test)
+#   ten-year "self-signed-10y" - port 443, ten-year self-signed (option 3)
 #
-# B shows that nothing checks the certificate; C is the pattern to copy.
+# The broken one shows that nothing checks the certificate; the ten-year
+# one is the pattern to copy.
 #
 # Each target group holds one instance, so a request that lands in the
 # other Availability Zone has to cross zones; nlb.tf turns that on for the
@@ -124,7 +125,7 @@ resource "aws_instance" "self_signed" {
   depends_on = [aws_route_table_association.private_b]
 }
 
-# The recommended version of option b: a self-signed certificate that stays
+# Option 3, the recommended one: a self-signed certificate that stays
 # valid for ten years, so nothing on the instance ever has to renew it.
 resource "aws_instance" "self_signed_10y" {
   ami                    = data.aws_ami.ubuntu.id

@@ -9,9 +9,9 @@ honour.
   architecture-{light,dark}.svg — top: the visitor, Route 53, the NGINX +
                                   Apache server with certbot, and the ACM ACME
                                   endpoint, binding and certificate inventory.
-                                  Bottom (phase 3): the ALB and NLB with their
-                                  ACM certificate, the plain, expired
-                                  self-signed and ten-year self-signed
+                                  Bottom (03-lb, options 2 and 3): the ALB
+                                  and NLB with their ACM certificate, the
+                                  plain, broken (test) and ten-year
                                   backends behind both in private subnets,
                                   and their NAT gateway.
 
@@ -85,9 +85,9 @@ def _esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-# ================================================================================
+# ==============================================================================
 # Layout
-# ================================================================================
+# ==============================================================================
 
 AW, AH = 1860, 1600
 NH = 96                                    # node height
@@ -95,7 +95,7 @@ TITLE_PX, SUB_PX, EDGE_PX = 24, 16, 16
 
 AWS_BOX = (380, 30, 1440, 1540)            # x, y, w, h
 EC2_BOX = (420, 250, 650, 440)
-LB_BOX = (420, 760, 1360, 780)             # phase 3: its own VPC
+LB_BOX = (420, 760, 1360, 780)             # 03-lb: its own VPC
 
 # id: (x, y, width, colour key, icon, title, subtitle)
 NODES = {
@@ -115,7 +115,7 @@ NODES = {
                  "issuer role, acme-lab only"),
     "acm":      (1200, 550, 580, "blue", "files", "ACM certificates",
                  "45-day · key pair origin ACME"),
-    # Phase 3
+    # 03-lb: options 2 and 3, plus the broken test
     "visitor2": (40, 1060, 290, "purple", "globe", "Browser",
                  "https://alb-lab… / nlb-lab…"),
     "alb":      (450, 840, 360, "green", "split", "ALB :443",
@@ -124,12 +124,12 @@ NODES = {
                  "DNS-validated · auto-renewed"),
     "nlb":      (450, 1280, 360, "amber", "network", "NLB :443 · :8443 · :9443",
                  "TLS listeners"),
-    "plain":    (1290, 840, 440, "navy", "server", "Backend A · NGINX :80",
-                 "plain HTTP (option a)"),
-    "selfsig":  (1290, 1060, 440, "red", "server", "Backend B · NGINX :443",
-                 "self-signed · expired · wrong name"),
-    "tenyear":  (1290, 1280, 440, "green", "server", "Backend C · NGINX :443",
-                 "self-signed · ten years (option b)"),
+    "plain":    (1290, 840, 440, "navy", "server", "Plain · option 2",
+                 "NGINX :80 · plain HTTP"),
+    "selfsig":  (1290, 1060, 440, "red", "server", "Broken · test",
+                 "NGINX :443 · expired · wrong name"),
+    "tenyear":  (1290, 1280, 440, "green", "server", "Ten-year · option 3",
+                 "NGINX :443 · self-signed · ten years"),
     "nat":      (450, 1420, 360, "navy", "network", "NAT gateway",
                  "public subnet · outbound only"),
 }
@@ -175,7 +175,7 @@ EDGES = {
                   "pink", "EAB key ID + MAC (once)", 1160, 476, "start", False),
     "e_issue":   (f"M1720,{_r('endpoint')[3]} L1720,{_r('acm')[1] - 5}",
                   "blue", "issued certs", 1710, 470, "end", False),
-    # Phase 3
+    # 03-lb: options 2 and 3, plus the broken test
     "e_nat":     (f"M{_r('tenyear')[4]},{_r('tenyear')[3]} "
                   f"V{_r('nat')[5]} H{_r('nat')[2] + 5}", "navy",
                   "backends' only way out: apt + SSM", _r("tenyear")[4] - 12,
@@ -274,8 +274,8 @@ def build_architecture(t):
 
     out.append(_box(AWS_BOX, "AWS · us-east-1", t, dashed=True))
     out.append(_box(EC2_BOX, "EC2 · Ubuntu 24.04 · Elastic IP", t, dashed=False))
-    out.append(_box(LB_BOX, "Phase 3 · own VPC · LBs and NAT public, backends private", t, dashed=False))
-    # The point of phase 3, under the TLS backend.
+    out.append(_box(LB_BOX, "Load balancers · own VPC · LBs and NAT public, backends private", t, dashed=False))
+    # The point of the broken test, under its backend.
     bx, by = _r("selfsig")[0], _r("selfsig")[3]
     out.append(f'<text x="{bx}" y="{by + 34}" font-family="{FONT}" '
                f'font-size="{EDGE_PX}" font-weight="600" fill="{t["red"]}">'

@@ -1,12 +1,12 @@
 # ==============================================================================
-# APPLICATION LOAD BALANCER (scenario 2)
+# APPLICATION LOAD BALANCER (options 2 and 3)
 # ==============================================================================
 #
 # HTTPS on 443 with the ACM certificate. The path picks the backend:
 #
-#   /http/*    ->  HTTP:80   ->  instance A   (option a: plain to the target)
-#   /tls/*     ->  HTTPS:443 ->  instance B   (option b: re-encrypt)
-#   /tls10y/*  ->  HTTPS:443 ->  instance C   (option b, ten-year cert)
+#   /http/*    ->  HTTP:80   ->  plain backend     (option 2)
+#   /tls/*     ->  HTTPS:443 ->  broken backend    (test, not an option)
+#   /tls10y/*  ->  HTTPS:443 ->  ten-year backend  (option 3: re-encrypt)
 #
 # Anything else gets a fixed 404. The ALB adds X-Forwarded-For and
 # X-Forwarded-Proto, and the backends see the ALB's own address as the

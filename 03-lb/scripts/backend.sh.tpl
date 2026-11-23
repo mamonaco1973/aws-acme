@@ -4,11 +4,11 @@
 #
 # The same script builds all three backends; CERT_MODE picks the kind:
 #
-#   A  plain            none      NGINX on port 80, plain HTTP       (option a)
-#   B  self-signed      expired   NGINX on port 443, broken cert     (option b)
-#   C  self-signed-10y  valid10y  NGINX on port 443, ten-year cert   (option b)
+#   plain     plain            none      NGINX :80, plain HTTP  (option 2)
+#   broken    self-signed      expired   NGINX :443, broken cert   (test)
+#   ten-year  self-signed-10y  valid10y  NGINX :443, ten-year  (option 3)
 #
-# (B follows backend_cert_mode, so it can be flipped to valid10y too.)
+# (broken follows backend_cert_mode, so it can be flipped to valid10y.)
 #
 # All serve one diagnostic page at any path, so the ALB's path prefixes and
 # the NLB's bare / all land on it. NGINX fills the page in per
@@ -33,7 +33,7 @@ apt-get install -y nginx openssl
 rm -f /etc/nginx/sites-enabled/default
 
 # ------------------------------------------------------------------------------
-# Self-signed certificate (backends B and C)
+# Self-signed certificate (the broken and ten-year backends)
 # ------------------------------------------------------------------------------
 # expired:  valid 2024-01-01 to 2025-01-01, named nobody-checks-this.invalid.
 #           Wrong on every count a client would check, on purpose: the load
